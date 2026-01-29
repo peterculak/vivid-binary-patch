@@ -1,0 +1,594 @@
+# Complete lldb Debugging Session - Step by Step
+
+This is the **actual, complete transcript** of our debugging session with detailed explanations of every step.
+
+---
+
+## Step 1: Launch Vivid in lldb
+
+```bash
+$ lldb /Applications/Vivid.app/Contents/MacOS/Vivid
+(lldb) target create "/Applications/Vivid.app/Contents/MacOS/Vivid"
+Current executable set to '/Applications/Vivid.app/Contents/MacOS/Vivid' (arm64).
+```
+
+**What this does:**
+- Loads Vivid into the debugger
+- Doesn't start the app yet - just prepares it
+- Shows it's an ARM64 binary (Apple Silicon)
+
+---
+
+## Step 2: Set Breakpoint on boolForKey:
+
+```lldb
+(lldb) b -[NSUserDefaults boolForKey:]
+Breakpoint 1: where = Foundation`-[NSUserDefaults(NSUserDefaults) boolForKey:], address = 0x0000000182824840
+```
+
+**What this does:**
+- `b` = breakpoint
+- `-[NSUserDefaults boolForKey:]` = Objective-C method that reads boolean values from UserDefaults
+- This will stop **every time** any code reads a boolean from UserDefaults
+
+**Why this works:**
+- Vivid stores its license as `userHasValidLicense` in UserDefaults
+- When it checks the license, it must call this function
+- We'll catch it red-handed!
+
+---
+
+## Step 3: Add Condition to Filter
+
+```lldb
+(lldb) breakpoint modify 1 -c '(BOOL)[(NSString *)$arg3 isEqualToString:@"userHasValidLicense"]'
+```
+
+**What this does:**
+- `breakpoint modify 1` = Modify breakpoint #1
+- `-c` = Add a condition
+- `$arg3` = The 3rd argument (the key name)
+- Only stop if the key equals "userHasValidLicense"
+
+**Why we need this:**
+- Without this, the breakpoint would hit hundreds of times (for every UserDefaults read)
+- With this, it only stops when checking the license key
+
+**Parameter positions:**
+- `$arg1` = `self` (the NSUserDefaults object)
+- `$arg2` = `_cmd` (the selector/method name)
+- `$arg3` = first parameter (the key string) ← This is what we check!
+
+---
+
+## Step 4: Run the App
+
+```lldb
+(lldb) run
+Process 6417 launched: '/Applications/Vivid.app/Contents/MacOS/Vivid' (arm64)
+2026-01-29 21:55:15.269358+0000 Vivid[6417:13474937] [Bugsnag] [INFO] Unhandled errors will not be reported because a debugger is attached
+💕 Vivid loves you, no matter what
+2026-01-29 21:55:15.319284+0000 Vivid[6417:13474937] [Sparkle] Error: Serving updates without an EdDSA key...
+setup mudmud
+Adding Vivid to Built-in Retina Display
+2026-01-29 21:55:15.562531+0000 Vivid[6417:13474937] [Window] Warning: -[NSWindow makeKeyWindow]...
+2026-01-29 21:55:15.680082+0000 Vivid[6417:13474937] [Window] Warning: -[NSWindow makeKeyWindow]...
+2026-01-29 21:55:15.698704+0000 Vivid[6417:13474937] [Window] Warning: -[NSWindow makeKeyWindow]...
+```
+
+**What's happening:**
+- Vivid starts normally
+- Shows various startup messages
+- Setting up windows, checking for updates, etc.
+- Our breakpoint is waiting...
+
+```lldb
+Process 6417 stopped
+* thread #1, queue = 'com.apple.main-thread', stop reason = breakpoint 1.1
+    frame #0: 0x000000019e930840 Foundation`-[NSUserDefaults(NSUserDefaults) boolForKey:]
+Foundation`-[NSUserDefaults(NSUserDefaults) boolForKey:]:
+->  0x19e930840 <+0>:  pacibsp
+    0x19e930844 <+4>:  stp    x22, x21, [sp, #-0x30]!
+    0x19e930848 <+8>:  stp    x20, x19, [sp, #0x10]
+    0x19e93084c <+12>: stp    x29, x30, [sp, #0x20]
+Target 0: (Vivid) stopped.
+```
+
+**BREAKPOINT HIT!** 🎯
+
+**What this means:**
+- The app tried to read `userHasValidLicense` from UserDefaults
+- Execution is paused at the very first instruction of `boolForKey:`
+- We can now inspect what's happening
+
+---
+
+## Step 5: Inspect the Parameters
+
+```lldb
+(lldb) po $x0
+note: object description requested, but type doesn't implement a custom object description. Consider using "p" instead of "po" (this note will only be shown once per debug session).
+<NSUserDefaults: 0x894c08240>
+```
+
+**What this shows:**
+- `$x0` = First parameter = `self` = The NSUserDefaults object
+- This is the object that stores all preferences
+
+```lldb
+(lldb) po $x1
+8972550608
+```
+
+**What this shows:**
+- `$x1` = Second parameter = `_cmd` = The selector
+- This is just the method name encoded as a number
+- Not important for our purposes
+
+```lldb
+(lldb) po $x2
+userHasValidLicense
+```
+
+**JACKPOT!** 🎉
+
+**What this shows:**
+- `$x2` = Third parameter = The key being read
+- It's "userHasValidLicense" - exactly what we're looking for!
+- This confirms we caught the license check
+
+---
+
+## Step 6: Let the Function Complete
+
+We don't care about the internals of `boolForKey:` - we want to see what Vivid does with the result. So we let it finish:
+
+```lldb
+(lldb) finish
+```
+
+**What `finish` does:**
+- Runs until the current function returns
+- Stops at the instruction right after the function call
+- Shows us the calling code
+
+**Result:**
+```lldb
+Process 6417 stopped
+* thread #1, queue = 'com.apple.main-thread', stop reason = step out
+    frame #0: 0x00000001d0cdbe54 SwiftUI`UserDefaultLocation.getValue(forReading:) + 504
+SwiftUI`getValue:
+->  0x1d0cdbe54 <+504>: mov    x0, x22
+    0x1d0cdbe58 <+508>: bl     0x1d1a71840    ; symbol stub for: objc_release
+    0x1d0cdbe5c <+512>: adrp   x8, 203767
+    0x1d0cdbe60 <+516>: ldr    x8, [x8, #0xaa8]
+```
+
+**Where we are now:**
+- We're in SwiftUI's code
+- Specifically in `UserDefaultLocation.getValue`
+- This is SwiftUI's `@AppStorage` property wrapper
+- Still not Vivid's code yet!
+
+---
+
+## Step 7: Go Up the Call Stack
+
+We need to go higher up the call stack to find Vivid's code:
+
+```lldb
+(lldb) up
+frame #1: 0x00000001d0cd7f50 SwiftUI`SwiftUI.AppStorage.wrappedValue.getter : τ_0_0 + 44
+```
+
+**What `up` does:**
+- Moves up one level in the call stack
+- Shows the function that called the current function
+- Like going back in time to see who called this
+
+**Still in SwiftUI!** Let's go up again:
+
+```lldb
+(lldb) up
+frame #2: 0x0000000100043658 Vivid`___lldb_unnamed_symbol2980 + 56
+```
+
+**NOW WE'RE IN VIVID'S CODE!** 🎯
+
+**What this shows:**
+- Address `0x100043658` is in Vivid's binary
+- `___lldb_unnamed_symbol2980` = A function without debug symbols (stripped binary)
+- `+ 56` = We're 56 bytes into this function
+
+---
+
+## Step 8: Disassemble Vivid's Code
+
+Now let's see the assembly code:
+
+```lldb
+(lldb) disassemble -c 30
+Vivid`___lldb_unnamed_symbol2980:
+    0x100043620 <+0>:   sub    sp, sp, #0x70
+    0x100043624 <+4>:   stp    x26, x25, [sp, #0x20]
+    0x100043628 <+8>:   stp    x24, x23, [sp, #0x30]
+    0x10004362c <+12>:  stp    x22, x21, [sp, #0x40]
+    0x100043630 <+16>:  stp    x20, x19, [sp, #0x50]
+    0x100043634 <+20>:  stp    x29, x30, [sp, #0x60]
+    0x100043638 <+24>:  add    x29, sp, #0x60
+    0x10004363c <+28>:  ldr    x19, [x20, #0x10]
+    0x100043640 <+32>:  mov    x0, x19
+    0x100043644 <+36>:  bl     0x1000b90ec    ; symbol stub for: swift_retain
+    0x100043648 <+40>:  adrp   x1, 170
+    0x10004364c <+44>:  ldr    x1, [x1, #0x350]
+    0x100043650 <+48>:  add    x8, sp, #0x8
+    0x100043654 <+52>:  bl     0x1000b7268    ; symbol stub for: SwiftUI.AppStorage.wrappedValue.getter : τ_0_0
+->  0x100043658 <+56>:  mov    x0, x19
+    0x10004365c <+60>:  bl     0x1000b90d4    ; symbol stub for: swift_release
+    0x100043660 <+64>:  ldrb   w8, [sp, #0x8]
+    0x100043664 <+68>:  tbnz   w8, #0x0, 0x1000436d0 ; <+176>
+    0x100043668 <+72>:  adrp   x8, 199
+    0x10004366c <+76>:  ldr    x8, [x8, #0x750]
+    0x100043670 <+80>:  cmn    x8, #0x1
+    0x100043674 <+84>:  b.ne   0x1000437bc    ; <+412>
+    0x100043678 <+88>:  adrp   x8, 212
+    0x10004367c <+92>:  adrp   x9, 200
+    0x100043680 <+96>:  add    x9, x9, #0xbc8
+    0x100043684 <+100>: ldr    x8, [x8, #0x570]
+    0x100043688 <+104>: ldr    x9, [x9]
+    0x10004368c <+108>: ldr    d0, [x8, x9]
+    0x100043690 <+112>: fmov   d1, #1.00000000
+    0x100043694 <+116>: fcmp   d0, d1
+```
+
+---
+
+## Step 9: Understanding the Critical Code
+
+Let's break down the important parts:
+
+### Line 0x100043654: Call the Getter
+```asm
+0x100043654 <+52>:  bl     0x1000b7268    ; SwiftUI.AppStorage.wrappedValue.getter
+```
+**What this does:**
+- `bl` = Branch with Link (function call)
+- Calls SwiftUI's `@AppStorage` getter
+- This is what reads `userHasValidLicense` from UserDefaults
+- The result is stored on the stack
+
+### Line 0x100043660: Load the Result
+```asm
+0x100043660 <+64>:  ldrb   w8, [sp, #0x8]
+```
+**What this does:**
+- `ldrb` = Load Register Byte
+- `w8` = Destination register (32-bit)
+- `[sp, #0x8]` = Read from stack at offset +8
+- **Loads the boolean license status into register w8**
+
+### Line 0x100043664: THE LICENSE CHECK! 🎯
+```asm
+0x100043664 <+68>:  tbnz   w8, #0x0, 0x1000436d0 ; <+176>
+```
+
+**THIS IS IT!** This is the instruction we need to patch!
+
+**Breaking it down:**
+- `tbnz` = Test Bit and Branch if Not Zero
+- `w8` = The register with the license status
+- `#0x0` = Test bit 0 (the boolean value)
+- `0x1000436d0` = Where to jump if licensed
+
+**In plain English:**
+"If the license is valid (w8 bit 0 is 1), jump to address 0x1000436d0 (the licensed features code). Otherwise, continue to the next line (restriction code)."
+
+### What Happens Next
+
+**If licensed (w8 = 1):**
+- Jump to `0x1000436d0`
+- Show all premium features
+- No restrictions
+
+**If unlicensed (w8 = 0):**
+- Continue to line `0x100043668`
+- Execute restriction code
+- Show "activate license" messages
+
+---
+
+## Step 10: The Patch Strategy
+
+We found the check at **address `0x100043664`**:
+```asm
+tbnz w8, #0x0, 0x1000436d0
+```
+
+**Our patch:**
+Replace it with an **unconditional branch**:
+```asm
+b 0x1000436d0
+```
+
+**Result:**
+- Always jump to the licensed code
+- Never execute the restriction code
+- License check is bypassed!
+
+---
+
+## Summary of What We Found
+
+| Item | Value |
+|------|-------|
+| **Memory Address** | `0x100043664` |
+| **Instruction** | `tbnz w8, #0x0, 0x1000436d0` |
+| **Bytes** | `68 03 00 37` |
+| **What it does** | Checks if licensed, jumps if true |
+| **Our patch** | `b 0x1000436d0` (always jump) |
+| **Patch bytes** | `1b 00 00 14` |
+
+---
+
+## Key Learnings
+
+1. **Breakpoints** can catch specific function calls
+2. **Conditions** filter breakpoints to only what we care about
+3. **`finish`** lets a function complete and shows the caller
+4. **`up`** moves up the call stack to find calling code
+5. **`disassemble`** shows the actual machine code
+6. **Conditional branches** can be made unconditional
+7. **One instruction change** can unlock an entire app!
+
+---
+
+**This entire debugging session took about 5 minutes!**
+
+---
+
+## Session Start
+
+```bash
+$ lldb /Applications/Vivid.app/Contents/MacOS/Vivid
+(lldb) target create "/Applications/Vivid.app/Contents/MacOS/Vivid"
+Current executable set to '/Applications/Vivid.app/Contents/MacOS/Vivid' (arm64).
+```
+
+---
+
+## Setting the Breakpoint
+
+```lldb
+(lldb) b -[NSUserDefaults boolForKey:]
+Breakpoint 1: where = Foundation`-[NSUserDefaults(NSUserDefaults) boolForKey:], address = 0x0000000182824840
+```
+
+**What this does:** Stops every time any code reads a boolean from UserDefaults.
+
+---
+
+## Adding the Condition
+
+```lldb
+(lldb) breakpoint modify 1 -c '(BOOL)[(NSString *)$arg3 isEqualToString:@"userHasValidLicense"]'
+```
+
+**What this does:** Only stops when the key being read is "userHasValidLicense".
+
+---
+
+## Running the App
+
+```lldb
+(lldb) run
+Process 6417 launched: '/Applications/Vivid.app/Contents/MacOS/Vivid' (arm64)
+2026-01-29 21:55:15.269358+0000 Vivid[6417:13474937] [Bugsnag] [INFO] Unhandled errors will not be reported because a debugger is attached
+💕 Vivid loves you, no matter what
+2026-01-29 21:55:15.319284+0000 Vivid[6417:13474937] [Sparkle] Error: Serving updates without an EdDSA key...
+setup mudmud
+Adding Vivid to Built-in Retina Display
+2026-01-29 21:55:15.562531+0000 Vivid[6417:13474937] [Window] Warning: -[NSWindow makeKeyWindow]...
+```
+
+The app starts normally...
+
+```lldb
+Process 6417 stopped
+* thread #1, queue = 'com.apple.main-thread', stop reason = breakpoint 1.1
+    frame #0: 0x000000019e930840 Foundation`-[NSUserDefaults(NSUserDefaults) boolForKey:]
+Foundation`-[NSUserDefaults(NSUserDefaults) boolForKey:]:
+->  0x19e930840 <+0>:  pacibsp
+    0x19e930844 <+4>:  stp    x22, x21, [sp, #-0x30]!
+    0x19e930848 <+8>:  stp    x20, x19, [sp, #0x10]
+    0x19e93084c <+12>: stp    x29, x30, [sp, #0x20]
+Target 0: (Vivid) stopped.
+```
+
+**Breakpoint hit!** The app is checking the license.
+
+---
+
+## Inspecting the Parameters
+
+First, we checked what key is being read:
+
+```lldb
+(lldb) po (NSString *)$x2
+userHasValidLicense
+```
+
+**Jackpot!** This is the license key we're looking for!
+
+We can also inspect the other parameters:
+
+```lldb
+(lldb) po $x0
+<NSUserDefaults: 0x894c08240>
+```
+
+This is the NSUserDefaults object.
+
+```lldb
+(lldb) po $x1
+8972550608
+```
+
+This is the selector (method name - `boolForKey:`).
+
+---
+
+## Letting the Function Complete
+
+Now we let `boolForKey:` finish executing and return:
+
+```lldb
+(lldb) finish
+Process 6417 stopped
+* thread #1, queue = 'com.apple.main-thread', stop reason = step out
+    frame #0: 0x00000001d0cdbe54 SwiftUI`UserDefaultLocation.getValue(forReading:) + 504
+SwiftUI`getValue:
+->  0x1d0cdbe54 <+504>: mov    x0, x22
+    0x1d0cdbe58 <+508>: bl     0x1d1a71840    ; symbol stub for: objc_release
+    0x1d0cdbe5c <+512>: adrp   x8, 203767
+    0x1d0cdbe60 <+516>: ldr    x8, [x8, #0xaa8]
+Target 0: (Vivid) stopped.
+```
+
+The function completed and returned the license status. We're now in SwiftUI's code that called `boolForKey:`.
+
+---
+
+## Going Up the Call Stack
+
+```lldb
+(lldb) up
+frame #1: 0x00000001d0cd7f50 SwiftUI`SwiftUI.AppStorage.wrappedValue.getter : τ_0_0 + 44
+SwiftUI`SwiftUI.AppStorage.wrappedValue.getter : τ_0_0:
+->  0x1d0cd7f50 <+44>: mov    x0, x20
+    0x1d0cd7f54 <+48>: ldp    x29, x30, [sp, #0x10]
+    0x1d0cd7f58 <+52>: ldp    x20, x19, [sp], #0x20
+    0x1d0cd7f5c <+56>: autibsp
+```
+
+Still in SwiftUI. Let's go up again.
+
+```lldb
+(lldb) up
+frame #2: 0x0000000100043658 Vivid`___lldb_unnamed_symbol2980 + 56
+```
+
+**Now we're in Vivid's code!**
+
+---
+
+## Disassembling Vivid's Code
+
+```lldb
+(lldb) disassemble -c 30
+Vivid`___lldb_unnamed_symbol2980:
+    0x100043620 <+0>:   sub    sp, sp, #0x70
+    0x100043624 <+4>:   stp    x26, x25, [sp, #0x20]
+    0x100043628 <+8>:   stp    x24, x23, [sp, #0x30]
+    0x10004362c <+12>:  stp    x22, x21, [sp, #0x40]
+    0x100043630 <+16>:  stp    x20, x19, [sp, #0x50]
+    0x100043634 <+20>:  stp    x29, x30, [sp, #0x60]
+    0x100043638 <+24>:  add    x29, sp, #0x60
+    0x10004363c <+28>:  ldr    x19, [x20, #0x10]
+    0x100043640 <+32>:  mov    x0, x19
+    0x100043644 <+36>:  bl     0x1000b90ec    ; symbol stub for: swift_retain
+    0x100043648 <+40>:  adrp   x1, 170
+    0x10004364c <+44>:  ldr    x1, [x1, #0x350]
+    0x100043650 <+48>:  add    x8, sp, #0x8
+    0x100043654 <+52>:  bl     0x1000b7268    ; symbol stub for: SwiftUI.AppStorage.wrappedValue.getter
+->  0x100043658 <+56>:  mov    x0, x19
+    0x10004365c <+60>:  bl     0x1000b90d4    ; symbol stub for: swift_release
+    0x100043660 <+64>:  ldrb   w8, [sp, #0x8]
+    0x100043664 <+68>:  tbnz   w8, #0x0, 0x1000436d0 ; <+176>
+    0x100043668 <+72>:  adrp   x8, 199
+    0x10004366c <+76>:  ldr    x8, [x8, #0x750]
+    ...
+```
+
+**Found it!** Line `0x100043664` has the license check:
+
+```asm
+0x100043660 <+64>:  ldrb   w8, [sp, #0x8]        ; Load license status into w8
+0x100043664 <+68>:  tbnz   w8, #0x0, 0x1000436d0 ; If licensed, jump to 0x1000436d0
+```
+
+---
+
+## Getting the Instruction Bytes
+
+```lldb
+(lldb) x/4xb 0x100043664
+0x100043664: 0x68 0x03 0x00 0x37
+```
+
+**These are the bytes we need to patch!**
+
+---
+
+## Getting the Base Address
+
+```lldb
+(lldb) image list Vivid
+[  0] 5451E03F-53E0-324F-900B-7144318F23BC 0x0000000100000000 /Applications/Vivid.app/Contents/MacOS/Vivid
+```
+
+Base address: `0x100000000`
+
+---
+
+## Calculating the Offset
+
+```
+Memory address: 0x100043664
+Base address:   0x100000000
+Initial offset: 0x100043664 - 0x100000000 = 0x43664
+```
+
+But this is wrong! We need to search for the bytes in the file because it's a universal binary.
+
+---
+
+## Finding the Actual Offset
+
+```python
+with open('/Applications/Vivid.app/Contents/MacOS/Vivid', 'rb') as f:
+    data = f.read()
+    offset = data.find(b'\x68\x03\x00\x37')
+    print(f"Found at offset: 0x{offset:x}")
+```
+
+Output:
+```
+Found at offset: 0x197664
+```
+
+**This is the correct file offset!**
+
+---
+
+## Summary
+
+We found:
+- **Memory address:** `0x100043664`
+- **File offset:** `0x197664`
+- **Original bytes:** `68 03 00 37`
+- **Instruction:** `tbnz w8, #0x0, 0x1000436d0`
+
+Now we can create a patcher to replace this instruction!
+
+---
+
+## Key Observations
+
+1. The license check happens during app startup
+2. It uses SwiftUI's `@AppStorage` property wrapper
+3. The check is a simple conditional branch
+4. We can patch it by making the branch unconditional
+
+---
+
+**This debugging session took about 5 minutes once we knew what to look for!**
